@@ -1,86 +1,88 @@
-'use strict';
-
 import expectThrow from './helpers/expectThrow';
+import decodeLogs from './helpers/decodeLogs';
 
-const BotCoin = artifacts.require('../contracts/BotCoin.sol');
+const BotCoin = artifacts.require('BotCoin');
 
 const BOT_DECIMALS = 9;
+const INITIAL_SUPPLY = 3625000000 * (10 ** BOT_DECIMALS);
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 contract('BotCoin', function(accounts) {
 
   let token;
+  const creator = accounts[0];
 
   beforeEach(async function() {
-    token = await BotCoin.new();
+    token = await BotCoin.new({ from: creator });
   });
 
   it('should have rigth metadata', async function () {
-    let name = await token.name();
-    let symbol = await token.symbol();
-    let decimals = await token.decimals();
+    const name = await token.name();
+    const symbol = await token.symbol();
+    const decimals = await token.decimals();
 
     assert.equal(name, "BotCoin");
     assert.equal(symbol, "BOT");
     assert.equal(decimals, BOT_DECIMALS);
   });
 
-  it('should start with a totalSupply of 0', async function() {
-    let totalSupply = await token.totalSupply();
+  it('should return the correct totalSupply after construction', async function () {
+    const totalSupply = await token.totalSupply();
+    const creatorBalance = await token.balanceOf(creator);
 
-    assert.equal(totalSupply, 0);
+    assert.equal(totalSupply, INITIAL_SUPPLY);
+    assert.equal(creatorBalance, INITIAL_SUPPLY);
+
+    const receipt = web3.eth.getTransactionReceipt(token.transactionHash);
+    const logs = decodeLogs(receipt.logs, BotCoin, token.address);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].event, 'Transfer');
+    assert.equal(logs[0].args.from, ZERO_ADDRESS);
+    assert.equal(logs[0].args.to, creator);
+    assert.equal(logs[0].args.value.valueOf(), totalSupply);
   });
 
-  it('should return mintingFinished false after construction', async function() {
-    let mintingFinished = await token.mintingFinished();
+  it('should return correct balances after transfer', async function () {
+    await token.transfer(accounts[1], 100);
 
-    assert.equal(mintingFinished, false);
+    assert.equal(await token.balanceOf(creator), INITIAL_SUPPLY - 100);
+
+    assert.equal(await token.balanceOf(accounts[1]), 100);
   });
 
-  it('should mint a given amount of tokens to a given address', async function() {
-    const result = await token.mint(accounts[0], 100);
-    assert.equal(result.logs[0].event, 'Mint');
-    assert.equal(result.logs[0].args.to.valueOf(), accounts[0]);
-    assert.equal(result.logs[0].args.amount.valueOf(), 100);
-    assert.equal(result.logs[1].event, 'Transfer');
-    assert.equal(result.logs[1].args.from.valueOf(), 0x0);
+  it('should return correct balances after multiple transfer', async function () {
+    const start = 3;
+    const count = 3;
 
-    let balance0 = await token.balanceOf(accounts[0]);
-    assert(balance0, 100);
+    let recipients = [];
+    let amounts = [];
+    let total = 0;
 
-    let totalSupply = await token.totalSupply();
-    assert(totalSupply, 100);
-  });
+    for (var i = 0; i < count; i++) {
+      var n = i + start;
+      recipients.push(accounts[n]);
+      var amount = n * 10;
+      amounts.push(amount);
+      total += amount;
+    }
 
-  it('should fail to mint after call to finishMinting', async function () {
-    await token.finishMinting();
-    assert.equal(await token.mintingFinished(), true);
-    await expectThrow(token.mint(accounts[0], 100));
-  });
+    const { logs } = await token.transferMultiple(recipients, amounts);
 
-  it('should fail to transfer before call to finishMinting', async function () {
-    await token.mint(accounts[0], 100);
+    assert.equal(await token.balanceOf(creator), INITIAL_SUPPLY - total);
 
-    await expectThrow(token.transfer(accounts[1], 10));
+    assert.equal(logs.length, count);
 
-    await token.approve(accounts[1], 10);
-    await expectThrow(token.transferFrom(accounts[0], accounts[1], 10, {from: accounts[1]}));
+    for (var i = 0; i < count; i++) {
+      var n = i + start;
+      assert.equal(await token.balanceOf(accounts[n]), n * 10);
 
-    assert.equal(await token.balanceOf(accounts[0]), 100);
-    assert.equal(await token.balanceOf(accounts[1]), 0);
-  });
-  
-  it('should transfer after call to finishMinting', async function () {
-    await token.mint(accounts[0], 100);
-    await token.finishMinting();
+      assert.equal(logs[i].event, 'Transfer');
+      assert.equal(logs[i].args.from, creator);
+      assert.equal(logs[i].args.to, accounts[n]);
+      assert.equal(logs[i].args.value.valueOf(), n * 10);
+    }
 
-    await token.transfer(accounts[1], 10);
-
-    await token.approve(accounts[2], 10);
-    await token.transferFrom(accounts[0], accounts[2], 10, {from: accounts[2]});
-
-    assert.equal(await token.balanceOf(accounts[0]), 80);
-    assert.equal(await token.balanceOf(accounts[1]), 10);
-    assert.equal(await token.balanceOf(accounts[2]), 10);
   });
 
 });
